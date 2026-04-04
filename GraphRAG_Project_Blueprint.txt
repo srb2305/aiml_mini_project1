@@ -1,0 +1,329 @@
+Enterprise Knowledge Assistant
+
+with Hybrid GraphRAG
+
+Full Project Blueprint  ·  Problem Statement  ·  Architecture  ·  Build Phases
+
+1. Problem Statement
+
+1.1  The Real-World Pain Point
+
+Enterprise teams — in legal, finance, healthcare, and research — sit on thousands of documents: contracts, regulatory filings, research papers, SOPs, and internal reports. They need to query this knowledge continuously to make decisions.
+
+Current RAG pipelines answer simple factual queries but fail at relationship-heavy questions such as:
+
+“Which vendors are linked to compliance risk flagged in Q3 reports?”
+
+“How does policy A affect regulation B through clause C?”
+
+“What research findings contradict our current clinical protocol?”
+
+These fail because vector search retrieves similar text but has no understanding of how entities relate to each other. It treats every chunk as an island.
+
+1.2  Three Hard Limitations of Standard RAG
+
+2. Solution Overview
+
+You will build a hybrid retrieval system that combines a vector database and a knowledge graph, runs a reranker over merged candidates, generates answers via an LLM, critiques its own output through a LangGraph self-correction loop, and logs automated evaluation scores to a live dashboard.
+
+2.1  What Makes This Different from Standard RAG
+
+3. Full Technology Stack
+
+4. System Architecture
+
+4.1  Ingestion Pipeline
+
+When a document is uploaded, two parallel pipelines run simultaneously:
+
+Vector Pipeline
+
+Load document with LangChain loaders (UnstructuredPDFLoader, Docx2txtLoader, etc.)
+
+Semantic chunking — split at meaning boundaries using embedding similarity
+
+Embed each chunk with sentence-transformers
+
+Store chunk + embedding + metadata (source, page, timestamp) in pgvector
+
+Graph Pipeline
+
+Run spaCy NER over each chunk to extract entities (persons, orgs, locations, concepts)
+
+Run an LLM prompt to extract relationships: “Extract (entity1, relation, entity2) triples from this text”
+
+Store entities as nodes, relationships as edges in Neo4j
+
+Link each node back to the source chunk ID in pgvector for cross-referencing
+
+4.2  Query & Retrieval Pipeline
+
+When a user submits a query, three retrieval steps run before generation:
+
+Step 1 — Parallel Dual Retrieval
+
+Vector retrieval: embed query, top-K cosine similarity search in pgvector
+
+Graph retrieval: extract query entities via NER, run Cypher traversal in Neo4j to find connected nodes up to 2 hops, fetch linked chunks
+
+Merge and deduplicate both candidate sets
+
+Step 2 — Reranking
+
+Pass merged candidate set through CrossEncoder (ms-marco-MiniLM-L6-v2)
+
+CrossEncoder scores each (query, candidate) pair independently — much more accurate than cosine similarity
+
+Select top-N reranked chunks as final context
+
+Step 3 — Generation with Self-Correction Loop (LangGraph)
+
+5. Build Phases & Milestones
+
+Goal
+
+Get documents loading, chunking, embedding, and stored in pgvector. Basic vector-only RAG working end to end.
+
+Steps
+
+Set up Docker Compose with PostgreSQL + pgvector, Neo4j, and your Python app container
+
+Install dependencies: langchain, sentence-transformers, psycopg2, neo4j, fastapi, spacy
+
+Write DocumentIngestionService: accepts file path, detects type, routes to correct LangChain loader
+
+Implement semantic chunker using sentence-transformers to detect embedding similarity drops at chunk boundaries
+
+Write VectorStore class: embed chunks, upsert to pgvector with HNSW index, store metadata
+
+Write a basic retriever: embed query, cosine search pgvector, return top-5 chunks
+
+Build a minimal FastAPI endpoint: POST /ingest (file upload) and POST /query (returns raw LLM answer)
+
+Test with 10-20 sample documents from any open domain (e.g., Wikipedia exports, Arxiv PDFs)
+
+Milestone
+
+✅  You can upload a PDF and ask a factual question about it and get a grounded answer.
+
+Goal
+
+Extract entities and relationships from ingested documents and store them in Neo4j, linked back to vector chunks.
+
+Steps
+
+Install and load spaCy en_core_web_sm for NER (persons, orgs, dates, locations, concepts)
+
+Write EntityExtractor: run spaCy over each chunk, deduplicate entities across chunks
+
+Write RelationExtractor: prompt Claude/GPT with: “Extract all (subject, predicate, object) triples from this paragraph. Return JSON.”
+
+Write GraphStore class: create Neo4j nodes for entities, edges for relationships, add chunk_id property to each node
+
+Write GraphRetriever: given a query, extract query entities, run Cypher query to find 2-hop neighbours, return linked chunk IDs
+
+Fetch chunks from pgvector by chunk ID to get the actual text context
+
+Visualise the graph in Neo4j Browser to sanity-check the extraction quality
+
+Milestone
+
+✅  Running a Cypher query like MATCH (n:Entity {name: ‘Anthropic’})-[r]->(m) RETURN n,r,m returns meaningful connected entities from your ingested documents.
+
+Goal
+
+Merge vector and graph retrieval candidates and rerank them with a CrossEncoder before passing to the LLM.
+
+Steps
+
+Write HybridRetriever: run VectorRetriever and GraphRetriever in parallel using asyncio.gather
+
+Merge results, deduplicate by chunk_id, union the two candidate sets
+
+Install sentence-transformers CrossEncoder: from sentence_transformers import CrossEncoder
+
+Load model: CrossEncoder(‘cross-encoder/ms-marco-MiniLM-L6-v2’)
+
+Score all (query, candidate_chunk) pairs with CrossEncoder.predict()
+
+Sort by rerank score, select top-5 as final context
+
+Compare: run the same 20 test queries with (a) vector-only, (b) graph-only, (c) hybrid+rerank. Log answer quality manually.
+
+Add rerank latency metric to Prometheus
+
+Milestone
+
+✅  Relationship queries like “who is connected to X in these documents” return visibly better results than vector-only retrieval.
+
+Goal
+
+Wrap retrieval and generation in a stateful LangGraph that critiques its own answers and re-retrieves if quality is below threshold.
+
+Steps
+
+Define LangGraph state schema: { query, context_chunks, answer, faithfulness_score, relevance_score, iteration_count }
+
+Node 1 — retrieve: calls HybridRetriever, stores chunks in state
+
+Node 2 — generate: formats prompt with context + query, calls LLM, stores answer in state
+
+Node 3 — critique: calls judge LLM with prompt: “Given this context and this answer, rate faithfulness (0-1) and relevance (0-1). Return JSON.”
+
+Node 4 — decision (conditional edge): if scores ≥ 0.7 → log and return. If scores < 0.7 and iteration < 2 → refine query and go back to Node 1
+
+Node 5 — log: write full trace to LangSmith, write eval scores to MLflow
+
+Set max_iterations = 2 to prevent infinite loops
+
+Test: deliberately ask ambiguous questions and observe whether the loop refines and improves
+
+Milestone
+
+✅  You can observe in LangSmith that the system re-retrieves on low-confidence answers. Scores improve on iteration 2.
+
+Goal
+
+Build an automated evaluation suite using RAGAS that measures retrieval and generation quality across all queries.
+
+Steps
+
+Install RAGAS: pip install ragas
+
+Build a golden evaluation dataset: 50 question-answer pairs with ground truth answers and source chunks (can be hand-labelled from your test documents)
+
+Run RAGAS metrics: faithfulness, answer_relevancy, context_precision, context_recall
+
+Log all RAGAS scores to MLflow per run so you can track improvement across versions
+
+Build a Grafana dashboard panel showing: avg faithfulness over time, avg relevance, iteration rate (how often the correction loop fires), rerank latency percentiles
+
+Run an A/B comparison: vector-only RAG vs hybrid+rerank+correction. Document the delta in eval scores.
+
+Write a results table in your README with the delta (this is your portfolio headline number)
+
+Milestone
+
+✅  You have a quantified improvement: e.g. “Context precision improved from 0.61 to 0.84 with hybrid retrieval + reranking.”
+
+Goal
+
+Ship a polished Streamlit UI, complete Prometheus + Grafana observability, and a fully containerised Docker Compose stack.
+
+Steps
+
+Streamlit UI: file uploader (triggers ingestion), query input box, answer display with source chunk citations, graph visualiser (pyvis or streamlit-agraph)
+
+FastAPI endpoints: POST /ingest, POST /query, GET /eval/latest, GET /graph/neighbours/{entity}
+
+Prometheus metrics: query_latency_seconds, rerank_latency_ms, graph_retrieval_latency_ms, correction_loop_trigger_count, eval_faithfulness_gauge
+
+Grafana: import dashboard JSON, connect to Prometheus datasource, add panels for all metrics
+
+Docker Compose services: app (FastAPI + Streamlit), postgres (pgvector), neo4j, prometheus, grafana, mlflow
+
+Write a comprehensive README: problem statement, architecture diagram (draw.io or Mermaid), benchmark results table, quick start guide
+
+Record a 3-minute demo video showing: document upload → graph extraction → query → correction loop firing → Grafana dashboard
+
+Milestone
+
+✅  Anyone can clone the repo, run docker compose up, and have the full system running in under 5 minutes.
+
+6. Recommended Folder Structure
+
+enterprise-knowledge-assistant/
+
+├── src/
+
+├── ingestion/
+
+│   ├── document_loader.py       # LangChain loaders
+
+│   ├── chunker.py               # Semantic chunking
+
+│   └── pipeline.py              # Orchestrates ingestion
+
+├── graph/
+
+│   ├── entity_extractor.py      # spaCy + LLM NER
+
+│   ├── relation_extractor.py    # LLM triple extraction
+
+│   └── graph_store.py           # Neo4j write/query
+
+├── retrieval/
+
+│   ├── vector_retriever.py      # pgvector HNSW search
+
+│   ├── graph_retriever.py       # Cypher traversal
+
+│   ├── hybrid_retriever.py      # Merge + deduplicate
+
+│   └── reranker.py              # CrossEncoder scoring
+
+├── agent/
+
+│   ├── graph_state.py           # LangGraph state schema
+
+│   ├── nodes.py                 # retrieve, generate, critique, log
+
+│   └── pipeline.py              # Compiled LangGraph
+
+├── evaluation/
+
+│   ├── ragas_eval.py            # RAGAS metric runner
+
+│   ├── golden_dataset.json      # Ground truth Q&A pairs
+
+│   └── mlflow_logger.py         # Log scores to MLflow
+
+├── api/
+
+│   └── app.py                   # FastAPI routes
+
+└── ui/
+
+└── streamlit_app.py          # Streamlit frontend
+
+├── benchmarks/
+
+├── compare_retrieval.py          # vector vs hybrid vs rerank
+
+└── eval_report.py                # Full RAGAS run + table
+
+├── docker/
+
+├── docker-compose.yml
+
+└── grafana/dashboard.json
+
+├── notebooks/
+
+└── 01_exploration.ipynb          # EDA, graph visualisation
+
+├── tests/
+
+├── pyproject.toml
+
+└── README.md
+
+7. Expected Benchmark Results
+
+These are realistic target numbers based on published research (RAGAS paper, LlamaIndex benchmarks). Your actual numbers will vary by dataset.
+
+8. Resume & Portfolio Framing
+
+Bullet Points to Add to Resume
+
+Designed hybrid retrieval pipeline: parallel vector search (pgvector HNSW) + knowledge graph traversal (Neo4j Cypher), merged and reranked with CrossEncoder (ms-marco-MiniLM) for 36% improvement in context precision.
+
+Built LangGraph self-correction agent with retrieve → generate → critique → re-retrieve loop; LLM-as-judge scores faithfulness and relevance, triggering re-retrieval on ~25% of complex queries.
+
+Implemented automated evaluation pipeline using RAGAS (faithfulness, context precision/recall, answer relevance) logged to MLflow; tracked metric deltas across prompt versions and retrieval strategies.
+
+Deployed full stack with Docker Compose: FastAPI, Streamlit, Neo4j, pgvector, Prometheus, Grafana, MLflow; complete observability for query latency, rerank time, and eval scores.
+
+9. Interview Talking Points
+
+Enterprise Knowledge Assistant with Hybrid GraphRAG  ·  Full Project Blueprint

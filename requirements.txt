@@ -1,0 +1,14 @@
+langchain
+sentence-transformers
+psycopg2
+neo4j
+fastapi
+spacy
+streamlit
+prometheus-client
+grafana-client
+mlflow
+ragas
+docker
+python-dotenv
+uvicorn
