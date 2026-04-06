@@ -2,7 +2,11 @@
 # Purpose: Loads documents of various types (PDF, DOCX, TXT, etc.) using LangChain loaders.
 # This module abstracts away the file type detection and uses the appropriate loader for each document.
 
-from langchain.document_loaders import UnstructuredPDFLoader, Docx2txtLoader, TextLoader
+from langchain_community.document_loaders import Docx2txtLoader, TextLoader
+try:
+    from langchain_community.document_loaders import UnstructuredPDFLoader
+except ImportError:
+    UnstructuredPDFLoader = None
 import os
 
 def load_document(file_path):
@@ -13,6 +17,8 @@ def load_document(file_path):
 	"""
 	ext = os.path.splitext(file_path)[1].lower()
 	if ext == ".pdf":
+		if UnstructuredPDFLoader is None:
+			raise ImportError("unstructured package required for PDF loading: pip install unstructured")
 		loader = UnstructuredPDFLoader(file_path)
 	elif ext == ".docx":
 		loader = Docx2txtLoader(file_path)

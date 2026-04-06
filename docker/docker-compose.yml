@@ -1,1 +1,29 @@
-# Docker Compose file will be filled in next step
+version: "3.9"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: pgvector
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: pgvector
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  neo4j:
+    image: neo4j:5
+    container_name: neo4j
+    environment:
+      NEO4J_AUTH: none
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4jdata:/data
+
+volumes:
+  pgdata:
+  neo4jdata:

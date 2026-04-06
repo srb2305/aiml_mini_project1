@@ -30,7 +30,11 @@ def semantic_chunk(text, model_name="all-MiniLM-L6-v2", max_chunk_size=500, simi
 				if sim < similarity_threshold:
 					chunks.append(chunk_text)
 					current_chunk = []
+					prev_embedding = None
+					continue
 			prev_embedding = embedding
+			chunks.append(chunk_text)
+			current_chunk = []
 	# Add any remaining text as a chunk
 	if current_chunk:
 		chunks.append(". ".join(current_chunk)) #list compression to string
